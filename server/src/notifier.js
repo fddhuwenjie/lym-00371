@@ -8,8 +8,29 @@ const {
 
 function matchSilence(alert, silence) {
   try {
-    const matchers = JSON.parse(silence.matchers);
-    const alertTags = alert.tags ? JSON.parse(alert.tags) : {};
+    let matchers = silence.matchers;
+    if (typeof matchers === 'string') {
+      try {
+        matchers = JSON.parse(matchers);
+      } catch (e) {
+        console.error('Failed to parse silence matchers:', matchers);
+        return false;
+      }
+    }
+    
+    if (!Array.isArray(matchers)) {
+      return false;
+    }
+    
+    let alertTags = alert.tags;
+    if (typeof alertTags === 'string') {
+      try {
+        alertTags = JSON.parse(alertTags);
+      } catch (e) {
+        alertTags = {};
+      }
+    }
+    alertTags = alertTags || {};
 
     for (const matcher of matchers) {
       const { name, value, isRegex, isEqual } = matcher;

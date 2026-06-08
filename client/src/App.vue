@@ -30,7 +30,7 @@ const queryResults = ref<Map<string, { points: { timestamp: number; value: numbe
 const activeMainTab = ref<'metrics' | 'cq' | 'importexport' | 'alerts' | 'retention'>('metrics')
 const promqlMode = ref(false)
 const promqlQuery = ref('')
-const promqlStep = ref(15000)
+const promqlStep = ref(15)
 const promqlResults = ref<{ metric: string; tags: Record<string, string | number>; values: { timestamp: number; value: number }[] }[]>([])
 const promqlLoading = ref(false)
 
@@ -325,9 +325,9 @@ onBeforeUnmount(() => {
             type="number"
             v-model.number="promqlStep"
             class="promql-step"
-            min="1000"
-            step="1000"
-            placeholder="Step (ms)"
+            min="1"
+            step="1"
+            placeholder="Step (s)"
           />
           <button class="btn btn-primary" @click="executePromQL" :disabled="promqlLoading">
             {{ promqlLoading ? '执行中...' : '执行' }}

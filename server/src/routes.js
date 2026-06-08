@@ -941,7 +941,7 @@ router.delete('/alerts/channels/:id', (req, res) => {
  *                 description: End timestamp (ms)
  *               step:
  *                 type: integer
- *                 description: Step interval in ms
+ *                 description: Step interval in seconds
  *     responses:
  *       200:
  *         description: Query result

@@ -56,8 +56,24 @@ async function importFromStream(inputStream, contentType) {
             }
 
             const tags = {};
+            
+            const tagsStr = record.tags || record.Tags;
+            if (tagsStr && typeof tagsStr === 'string' && tagsStr.includes('=')) {
+              const tagPairs = tagsStr.split(';');
+              for (const pair of tagPairs) {
+                const eqIdx = pair.indexOf('=');
+                if (eqIdx > 0) {
+                  const key = pair.slice(0, eqIdx).trim();
+                  const val = pair.slice(eqIdx + 1).trim();
+                  if (key && val !== '') {
+                    tags[key] = val;
+                  }
+                }
+              }
+            }
+
             for (const [key, val] of Object.entries(record)) {
-              if (key !== 'metric' && key !== 'Metric' && key !== 'timestamp' && key !== 'Timestamp' && key !== 'ts' && key !== 'value' && key !== 'Value' && val !== undefined && val !== null && val !== '') {
+              if (key !== 'metric' && key !== 'Metric' && key !== 'timestamp' && key !== 'Timestamp' && key !== 'ts' && key !== 'value' && key !== 'Value' && key !== 'tags' && key !== 'Tags' && val !== undefined && val !== null && val !== '') {
                 tags[key] = val;
               }
             }

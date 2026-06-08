@@ -471,7 +471,8 @@ class PromQLEvaluator {
   }
 
   evaluate(ast, startTime, endTime, step) {
-    return this.evaluateNode(ast, startTime, endTime, step);
+    const stepMs = step * 1000;
+    return this.evaluateNode(ast, startTime, endTime, stepMs);
   }
 
   evaluateNode(node, startTime, endTime, step) {

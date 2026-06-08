@@ -257,7 +257,26 @@ function createAlertRule(rule) {
 }
 
 function listAlertRules() {
-  return db.prepare(`SELECT * FROM alert_rules ORDER BY created_at DESC`).all();
+  const rows = db.prepare(`SELECT * FROM alert_rules ORDER BY created_at DESC`).all();
+  return rows.map(row => {
+    try {
+      if (row.tags) row.tags = JSON.parse(row.tags);
+    } catch (e) {
+      row.tags = {};
+    }
+    try {
+      if (row.group_by) row.group_by = JSON.parse(row.group_by);
+    } catch (e) {
+      row.group_by = null;
+    }
+    try {
+      if (row.notification_channels) row.notification_channels = JSON.parse(row.notification_channels);
+    } catch (e) {
+      row.notification_channels = null;
+    }
+    row.enabled = row.enabled === 1;
+    return row;
+  });
 }
 
 function deleteAlertRule(id) {
@@ -266,17 +285,51 @@ function deleteAlertRule(id) {
 }
 
 function getActiveAlertRules() {
-  return db.prepare(`SELECT * FROM alert_rules WHERE enabled = 1`).all();
+  const rows = db.prepare(`SELECT * FROM alert_rules WHERE enabled = 1`).all();
+  return rows.map(row => {
+    try {
+      if (row.tags) row.tags = JSON.parse(row.tags);
+    } catch (e) {
+      row.tags = {};
+    }
+    try {
+      if (row.group_by) row.group_by = JSON.parse(row.group_by);
+    } catch (e) {
+      row.group_by = null;
+    }
+    try {
+      if (row.notification_channels) row.notification_channels = JSON.parse(row.notification_channels);
+    } catch (e) {
+      row.notification_channels = null;
+    }
+    row.enabled = row.enabled === 1;
+    return row;
+  });
 }
 
 function getOpenAlerts() {
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT a.*, ar.tags as rule_tags
     FROM alerts a
     JOIN alert_rules ar ON a.rule_id = ar.id
     WHERE a.resolved = 0
     ORDER BY a.start_ts DESC
   `).all();
+  return rows.map(row => {
+    try {
+      if (row.tags) row.tags = JSON.parse(row.tags);
+    } catch (e) {
+      row.tags = {};
+    }
+    try {
+      if (row.rule_tags) row.rule_tags = JSON.parse(row.rule_tags);
+    } catch (e) {
+      row.rule_tags = {};
+    }
+    row.resolved = row.resolved === 1;
+    row.notified = row.notified === 1;
+    return row;
+  });
 }
 
 function createAlert(rule, value, startTs, groupKey = null, tags = null) {
@@ -314,9 +367,19 @@ function resolveAlert(alertId, endTs) {
 }
 
 function listAlerts(limit = 100) {
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT * FROM alerts ORDER BY start_ts DESC LIMIT ?
   `).all(limit);
+  return rows.map(row => {
+    try {
+      if (row.tags) row.tags = JSON.parse(row.tags);
+    } catch (e) {
+      row.tags = {};
+    }
+    row.resolved = row.resolved === 1;
+    row.notified = row.notified === 1;
+    return row;
+  });
 }
 
 function createContinuousQuery(cq) {
@@ -336,7 +399,16 @@ function createContinuousQuery(cq) {
 }
 
 function listContinuousQueries() {
-  return db.prepare(`SELECT * FROM continuous_queries ORDER BY created_at DESC`).all();
+  const rows = db.prepare(`SELECT * FROM continuous_queries ORDER BY created_at DESC`).all();
+  return rows.map(row => {
+    try {
+      if (row.tags_keep) row.tags_keep = JSON.parse(row.tags_keep);
+    } catch (e) {
+      row.tags_keep = [];
+    }
+    row.enabled = row.enabled === 1;
+    return row;
+  });
 }
 
 function deleteContinuousQuery(id) {
@@ -348,7 +420,16 @@ function toggleContinuousQuery(id, enabled) {
 }
 
 function getActiveContinuousQueries() {
-  return db.prepare(`SELECT * FROM continuous_queries WHERE enabled = 1`).all();
+  const rows = db.prepare(`SELECT * FROM continuous_queries WHERE enabled = 1`).all();
+  return rows.map(row => {
+    try {
+      if (row.tags_keep) row.tags_keep = JSON.parse(row.tags_keep);
+    } catch (e) {
+      row.tags_keep = [];
+    }
+    row.enabled = row.enabled === 1;
+    return row;
+  });
 }
 
 function updateCQProgress(id, lastProcessedTs) {
@@ -360,7 +441,14 @@ function executeCQ(cq) {
   const aggMap = { avg: 'AVG', min: 'MIN', max: 'MAX', sum: 'SUM', count: 'COUNT' };
   const aggFn = aggMap[cq.agg_func] || 'AVG';
 
-  const tagsKeep = cq.tags_keep ? JSON.parse(cq.tags_keep) : null;
+  let tagsKeep = cq.tags_keep;
+  if (tagsKeep && typeof tagsKeep === 'string') {
+    try {
+      tagsKeep = JSON.parse(tagsKeep);
+    } catch (e) {
+      tagsKeep = null;
+    }
+  }
 
   let selectTags = 'NULL';
   let groupByTags = '';
@@ -401,7 +489,15 @@ function createNotificationChannel(channel) {
 }
 
 function listNotificationChannels() {
-  return db.prepare(`SELECT * FROM notification_channels ORDER BY created_at DESC`).all();
+  const rows = db.prepare(`SELECT * FROM notification_channels ORDER BY created_at DESC`).all();
+  return rows.map(row => {
+    try {
+      row.config = JSON.parse(row.config);
+    } catch (e) {
+      row.config = {};
+    }
+    return row;
+  });
 }
 
 function deleteNotificationChannel(id) {
@@ -426,10 +522,20 @@ function createSilence(silence) {
 
 function listSilences(includeExpired = false) {
   const now = Date.now();
+  let rows;
   if (includeExpired) {
-    return db.prepare(`SELECT * FROM silences ORDER BY created_at DESC`).all();
+    rows = db.prepare(`SELECT * FROM silences ORDER BY created_at DESC`).all();
+  } else {
+    rows = db.prepare(`SELECT * FROM silences WHERE ends_at > ? ORDER BY created_at DESC`).all(now);
   }
-  return db.prepare(`SELECT * FROM silences WHERE ends_at > ? ORDER BY created_at DESC`).all(now);
+  return rows.map(row => {
+    try {
+      row.matchers = JSON.parse(row.matchers);
+    } catch (e) {
+      row.matchers = [];
+    }
+    return row;
+  });
 }
 
 function deleteSilence(id) {
@@ -456,7 +562,12 @@ function createRetentionPolicy(policy) {
 }
 
 function listRetentionPolicies() {
-  return db.prepare(`SELECT * FROM retention_policies ORDER BY created_at DESC`).all();
+  const rows = db.prepare(`SELECT * FROM retention_policies ORDER BY created_at DESC`).all();
+  return rows.map(row => {
+    row.enabled = row.enabled === 1;
+    row.archive = row.archive === 1;
+    return row;
+  });
 }
 
 function deleteRetentionPolicy(id) {
@@ -468,7 +579,12 @@ function toggleRetentionPolicy(id, enabled) {
 }
 
 function getActiveRetentionPolicies() {
-  return db.prepare(`SELECT * FROM retention_policies WHERE enabled = 1`).all();
+  const rows = db.prepare(`SELECT * FROM retention_policies WHERE enabled = 1`).all();
+  return rows.map(row => {
+    row.enabled = row.enabled === 1;
+    row.archive = row.archive === 1;
+    return row;
+  });
 }
 
 function updateRetentionPolicyLastRun(id, lastRun) {
