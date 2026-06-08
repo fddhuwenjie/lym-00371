@@ -15,6 +15,11 @@ db.pragma('synchronous = NORMAL');
 db.pragma('cache_size = -65536');
 db.pragma('temp_store = MEMORY');
 
+function columnExists(tableName, columnName) {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  return columns.some(c => c.name === columnName);
+}
+
 function initTables() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS points (
@@ -25,9 +30,6 @@ function initTables() {
       PRIMARY KEY (metric, ts)
     ) WITHOUT ROWID;
 
-    CREATE INDEX IF NOT EXISTS idx_points_metric_ts ON points(metric, ts);
-    CREATE INDEX IF NOT EXISTS idx_points_ts ON points(ts);
-
     CREATE TABLE IF NOT EXISTS alert_rules (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       metric TEXT NOT NULL,
@@ -36,7 +38,10 @@ function initTables() {
       duration INTEGER NOT NULL,
       tags JSON,
       enabled INTEGER DEFAULT 1,
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      group_by JSON,
+      severity TEXT DEFAULT 'warning',
+      notification_channels JSON
     );
 
     CREATE TABLE IF NOT EXISTS alerts (
@@ -50,11 +55,82 @@ function initTables() {
       end_ts INTEGER,
       tags JSON,
       resolved INTEGER DEFAULT 0,
+      group_key TEXT,
+      severity TEXT DEFAULT 'warning',
+      notified INTEGER DEFAULT 0,
       FOREIGN KEY (rule_id) REFERENCES alert_rules(id)
     );
 
+    CREATE TABLE IF NOT EXISTS silences (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      matchers JSON NOT NULL,
+      starts_at INTEGER NOT NULL,
+      ends_at INTEGER NOT NULL,
+      comment TEXT,
+      created_by TEXT,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS notification_channels (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      type TEXT NOT NULL,
+      config JSON NOT NULL,
+      enabled INTEGER DEFAULT 1,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS continuous_queries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_metric TEXT NOT NULL,
+      target_metric TEXT NOT NULL,
+      agg_func TEXT NOT NULL,
+      bucket_seconds INTEGER NOT NULL,
+      tags_keep JSON,
+      last_processed_ts INTEGER DEFAULT 0,
+      enabled INTEGER DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      UNIQUE(source_metric, target_metric, agg_func, bucket_seconds)
+    );
+
+    CREATE TABLE IF NOT EXISTS retention_policies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      metric_pattern TEXT NOT NULL UNIQUE,
+      retention_days INTEGER NOT NULL,
+      archive INTEGER DEFAULT 0,
+      last_run INTEGER DEFAULT 0,
+      enabled INTEGER DEFAULT 1,
+      created_at INTEGER NOT NULL
+    );
+  `);
+
+  if (!columnExists('alert_rules', 'group_by')) {
+    db.exec('ALTER TABLE alert_rules ADD COLUMN group_by JSON');
+  }
+  if (!columnExists('alert_rules', 'severity')) {
+    db.exec("ALTER TABLE alert_rules ADD COLUMN severity TEXT DEFAULT 'warning'");
+  }
+  if (!columnExists('alert_rules', 'notification_channels')) {
+    db.exec('ALTER TABLE alert_rules ADD COLUMN notification_channels JSON');
+  }
+
+  if (!columnExists('alerts', 'group_key')) {
+    db.exec('ALTER TABLE alerts ADD COLUMN group_key TEXT');
+  }
+  if (!columnExists('alerts', 'severity')) {
+    db.exec("ALTER TABLE alerts ADD COLUMN severity TEXT DEFAULT 'warning'");
+  }
+  if (!columnExists('alerts', 'notified')) {
+    db.exec('ALTER TABLE alerts ADD COLUMN notified INTEGER DEFAULT 0');
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_points_metric_ts ON points(metric, ts);
+    CREATE INDEX IF NOT EXISTS idx_points_ts ON points(ts);
     CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(start_ts);
     CREATE INDEX IF NOT EXISTS idx_alerts_resolved ON alerts(resolved);
+    CREATE INDEX IF NOT EXISTS idx_alerts_group ON alerts(group_key, resolved);
+    CREATE INDEX IF NOT EXISTS idx_silences_time ON silences(starts_at, ends_at);
   `);
 }
 
@@ -163,8 +239,8 @@ function getTagsForMetric(metric) {
 
 function createAlertRule(rule) {
   const stmt = db.prepare(`
-    INSERT INTO alert_rules (metric, operator, threshold, duration, tags, enabled, created_at)
-    VALUES (?, ?, ?, ?, ?, 1, ?)
+    INSERT INTO alert_rules (metric, operator, threshold, duration, tags, enabled, created_at, group_by, severity, notification_channels)
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
   `);
   const result = stmt.run(
     rule.metric,
@@ -172,7 +248,10 @@ function createAlertRule(rule) {
     rule.threshold,
     rule.duration,
     rule.tags ? JSON.stringify(rule.tags) : null,
-    Date.now()
+    Date.now(),
+    rule.group_by ? JSON.stringify(rule.group_by) : null,
+    rule.severity || 'warning',
+    rule.notification_channels ? JSON.stringify(rule.notification_channels) : null
   );
   return { id: result.lastInsertRowid };
 }
@@ -200,16 +279,19 @@ function getOpenAlerts() {
   `).all();
 }
 
-function createAlert(rule, value, startTs) {
-  const existing = db.prepare(`
+function createAlert(rule, value, startTs, groupKey = null, tags = null) {
+  const sql = `
     SELECT id FROM alerts WHERE rule_id = ? AND resolved = 0
-  `).get(rule.id);
+    ${groupKey !== null ? 'AND group_key = ?' : 'AND group_key IS NULL'}
+  `;
+  const params = groupKey !== null ? [rule.id, groupKey] : [rule.id];
+  const existing = db.prepare(sql).get(...params);
 
   if (existing) return null;
 
   const stmt = db.prepare(`
-    INSERT INTO alerts (rule_id, metric, value, threshold, operator, start_ts, tags, resolved)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+    INSERT INTO alerts (rule_id, metric, value, threshold, operator, start_ts, tags, resolved, group_key, severity, notified)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0)
   `);
   const result = stmt.run(
     rule.id,
@@ -218,7 +300,9 @@ function createAlert(rule, value, startTs) {
     rule.threshold,
     rule.operator,
     startTs,
-    rule.tags
+    tags !== null ? tags : rule.tags,
+    groupKey,
+    rule.severity || 'warning'
   );
   return { id: result.lastInsertRowid };
 }
@@ -235,6 +319,176 @@ function listAlerts(limit = 100) {
   `).all(limit);
 }
 
+function createContinuousQuery(cq) {
+  const stmt = db.prepare(`
+    INSERT INTO continuous_queries (source_metric, target_metric, agg_func, bucket_seconds, tags_keep, last_processed_ts, enabled, created_at)
+    VALUES (?, ?, ?, ?, ?, 0, 1, ?)
+  `);
+  const result = stmt.run(
+    cq.source_metric,
+    cq.target_metric,
+    cq.agg_func,
+    cq.bucket_seconds,
+    cq.tags_keep ? JSON.stringify(cq.tags_keep) : null,
+    Date.now()
+  );
+  return { id: result.lastInsertRowid };
+}
+
+function listContinuousQueries() {
+  return db.prepare(`SELECT * FROM continuous_queries ORDER BY created_at DESC`).all();
+}
+
+function deleteContinuousQuery(id) {
+  db.prepare(`DELETE FROM continuous_queries WHERE id = ?`).run(id);
+}
+
+function toggleContinuousQuery(id, enabled) {
+  db.prepare(`UPDATE continuous_queries SET enabled = ? WHERE id = ?`).run(enabled ? 1 : 0, id);
+}
+
+function getActiveContinuousQueries() {
+  return db.prepare(`SELECT * FROM continuous_queries WHERE enabled = 1`).all();
+}
+
+function updateCQProgress(id, lastProcessedTs) {
+  db.prepare(`UPDATE continuous_queries SET last_processed_ts = ? WHERE id = ?`).run(lastProcessedTs, id);
+}
+
+function executeCQ(cq) {
+  const bucketMs = cq.bucket_seconds * 1000;
+  const aggMap = { avg: 'AVG', min: 'MIN', max: 'MAX', sum: 'SUM', count: 'COUNT' };
+  const aggFn = aggMap[cq.agg_func] || 'AVG';
+
+  const tagsKeep = cq.tags_keep ? JSON.parse(cq.tags_keep) : null;
+
+  let selectTags = 'NULL';
+  let groupByTags = '';
+  if (tagsKeep && tagsKeep.length > 0) {
+    const tagExtracts = tagsKeep.map(t => `json_extract(tags, '$.${t}')`).join(', ');
+    selectTags = `json_object(${tagsKeep.map(t => `'${t}', json_extract(tags, '$.${t}')`).join(', ')})`;
+    groupByTags = `, ${tagExtracts}`;
+  }
+
+  const sql = `
+    INSERT OR REPLACE INTO points (metric, ts, value, tags)
+    SELECT
+      ? AS metric,
+      (ts / ?) * ? AS ts,
+      ${aggFn}(value) AS value,
+      ${selectTags} AS tags
+    FROM points
+    WHERE metric = ? AND ts > ? AND ts <= ?
+    GROUP BY (ts / ?) * ? ${groupByTags}
+    ORDER BY ts ASC
+  `;
+
+  return db.prepare(sql);
+}
+
+function createNotificationChannel(channel) {
+  const stmt = db.prepare(`
+    INSERT INTO notification_channels (name, type, config, enabled, created_at)
+    VALUES (?, ?, ?, 1, ?)
+  `);
+  const result = stmt.run(
+    channel.name,
+    channel.type,
+    JSON.stringify(channel.config),
+    Date.now()
+  );
+  return { id: result.lastInsertRowid };
+}
+
+function listNotificationChannels() {
+  return db.prepare(`SELECT * FROM notification_channels ORDER BY created_at DESC`).all();
+}
+
+function deleteNotificationChannel(id) {
+  db.prepare(`DELETE FROM notification_channels WHERE id = ?`).run(id);
+}
+
+function createSilence(silence) {
+  const stmt = db.prepare(`
+    INSERT INTO silences (matchers, starts_at, ends_at, comment, created_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const result = stmt.run(
+    JSON.stringify(silence.matchers),
+    silence.starts_at,
+    silence.ends_at,
+    silence.comment || null,
+    silence.created_by || null,
+    Date.now()
+  );
+  return { id: result.lastInsertRowid };
+}
+
+function listSilences(includeExpired = false) {
+  const now = Date.now();
+  if (includeExpired) {
+    return db.prepare(`SELECT * FROM silences ORDER BY created_at DESC`).all();
+  }
+  return db.prepare(`SELECT * FROM silences WHERE ends_at > ? ORDER BY created_at DESC`).all(now);
+}
+
+function deleteSilence(id) {
+  db.prepare(`DELETE FROM silences WHERE id = ?`).run(id);
+}
+
+function getActiveSilences() {
+  const now = Date.now();
+  return db.prepare(`SELECT * FROM silences WHERE starts_at <= ? AND ends_at > ?`).all(now, now);
+}
+
+function createRetentionPolicy(policy) {
+  const stmt = db.prepare(`
+    INSERT INTO retention_policies (metric_pattern, retention_days, archive, last_run, enabled, created_at)
+    VALUES (?, ?, ?, 0, 1, ?)
+  `);
+  const result = stmt.run(
+    policy.metric_pattern,
+    policy.retention_days,
+    policy.archive ? 1 : 0,
+    Date.now()
+  );
+  return { id: result.lastInsertRowid };
+}
+
+function listRetentionPolicies() {
+  return db.prepare(`SELECT * FROM retention_policies ORDER BY created_at DESC`).all();
+}
+
+function deleteRetentionPolicy(id) {
+  db.prepare(`DELETE FROM retention_policies WHERE id = ?`).run(id);
+}
+
+function toggleRetentionPolicy(id, enabled) {
+  db.prepare(`UPDATE retention_policies SET enabled = ? WHERE id = ?`).run(enabled ? 1 : 0, id);
+}
+
+function getActiveRetentionPolicies() {
+  return db.prepare(`SELECT * FROM retention_policies WHERE enabled = 1`).all();
+}
+
+function updateRetentionPolicyLastRun(id, lastRun) {
+  db.prepare(`UPDATE retention_policies SET last_run = ? WHERE id = ?`).run(lastRun, id);
+}
+
+function getUnnotifiedFiringAlerts() {
+  return db.prepare(`
+    SELECT a.*, ar.group_by, ar.notification_channels
+    FROM alerts a
+    JOIN alert_rules ar ON a.rule_id = ar.id
+    WHERE a.resolved = 0 AND a.notified = 0
+    ORDER BY a.group_key, a.start_ts
+  `).all();
+}
+
+function markAlertNotified(alertId) {
+  db.prepare(`UPDATE alerts SET notified = 1 WHERE id = ?`).run(alertId);
+}
+
 module.exports = {
   db,
   insertPoints,
@@ -248,5 +502,27 @@ module.exports = {
   getOpenAlerts,
   createAlert,
   resolveAlert,
-  listAlerts
+  listAlerts,
+  createContinuousQuery,
+  listContinuousQueries,
+  deleteContinuousQuery,
+  toggleContinuousQuery,
+  getActiveContinuousQueries,
+  updateCQProgress,
+  executeCQ,
+  createNotificationChannel,
+  listNotificationChannels,
+  deleteNotificationChannel,
+  createSilence,
+  listSilences,
+  deleteSilence,
+  getActiveSilences,
+  createRetentionPolicy,
+  listRetentionPolicies,
+  deleteRetentionPolicy,
+  toggleRetentionPolicy,
+  getActiveRetentionPolicies,
+  updateRetentionPolicyLastRun,
+  getUnnotifiedFiringAlerts,
+  markAlertNotified
 };
