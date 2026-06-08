@@ -100,7 +100,7 @@ const MAX_POINTS = 1000;
 
 /**
  * @swagger
- * /points:
+ * /api/points:
  *   post:
  *     summary: Write one or more data points
  *     tags: [Data]
@@ -145,7 +145,7 @@ router.post('/points', (req, res) => {
 
 /**
  * @swagger
- * /query:
+ * /api/query:
  *   post:
  *     summary: Query time series data with optional downsampling
  *     tags: [Data]
@@ -240,7 +240,7 @@ router.post('/query', (req, res) => {
 
 /**
  * @swagger
- * /metrics:
+ * /api/metrics:
  *   get:
  *     summary: List all available metrics
  *     tags: [Metadata]
@@ -265,7 +265,7 @@ router.get('/metrics', (req, res) => {
 
 /**
  * @swagger
- * /metrics/{metric}/tags:
+ * /api/metrics/{metric}/tags:
  *   get:
  *     summary: Get tags for a specific metric
  *     tags: [Metadata]
@@ -305,7 +305,7 @@ router.get('/metrics/:metric/tags', (req, res) => {
 
 /**
  * @swagger
- * /alerts/rules:
+ * /api/alerts/rules:
  *   get:
  *     summary: List all alert rules
  *     tags: [Alerts]
@@ -330,7 +330,7 @@ router.get('/alerts/rules', (req, res) => {
 
 /**
  * @swagger
- * /alerts/rules:
+ * /api/alerts/rules:
  *   post:
  *     summary: Create a new alert rule
  *     tags: [Alerts]
@@ -362,7 +362,7 @@ router.post('/alerts/rules', (req, res) => {
 
 /**
  * @swagger
- * /alerts/rules/{id}:
+ * /api/alerts/rules/{id}:
  *   delete:
  *     summary: Delete an alert rule and its associated alerts
  *     tags: [Alerts]
@@ -387,7 +387,7 @@ router.delete('/alerts/rules/:id', (req, res) => {
 
 /**
  * @swagger
- * /alerts:
+ * /api/alerts:
  *   get:
  *     summary: List recent alerts
  *     tags: [Alerts]
@@ -420,7 +420,7 @@ router.get('/alerts', (req, res) => {
 
 /**
  * @swagger
- * /alerts/open:
+ * /api/alerts/open:
  *   get:
  *     summary: Get currently open (unresolved) alerts
  *     tags: [Alerts]

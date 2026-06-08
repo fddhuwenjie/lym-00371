@@ -89,7 +89,8 @@ function queryPoints(params) {
   const sqlParams = [];
 
   if (aggregation && bucketSeconds) {
-    const bucket = `(ts / ${bucketSeconds}) * ${bucketSeconds}`;
+    const bucketMs = bucketSeconds * 1000;
+    const bucket = `(ts / ${bucketMs}) * ${bucketMs}`;
     const aggMap = {
       avg: 'AVG(value)',
       min: 'MIN(value)',
@@ -111,7 +112,8 @@ function queryPoints(params) {
   }
 
   if (aggregation && bucketSeconds) {
-    sql += `GROUP BY (ts / ${bucketSeconds}) * ${bucketSeconds} `;
+    const bucketMs = bucketSeconds * 1000;
+    sql += `GROUP BY (ts / ${bucketMs}) * ${bucketMs} `;
   }
 
   sql += `ORDER BY ts ASC`;
